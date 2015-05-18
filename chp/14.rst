@@ -1,0 +1,435 @@
+.. _chapter-14-monads:
+
+第十四章：Monads
+=====================
+
+.. _introduction:
+
+简介
+--------------------------------
+
+在\ :ref:`chapter7-I/O`\ 中，我们讨论了 ``IO`` monad，但我们刻意把讨论集中在了如何与外界交流上。我们并没有讨论 monad 是什么。
+
+在\ :ref:`chapter7-I/O`\ 中我们看到 ``IO`` monad 确实很好用。除了语法上的不同之外，在 ``IO`` monad 中写代码和用其它命令式语言写代码没什么大的区别。
+
+在之前的章节中，我们实际上已经引入了 monad 这种结构，这一点很快就会看到。
+我们想告诉你的是，在解决某些问题时，monad 非常直观、有用。本章将会定义一些 monad 来告诉你它有多简单。
+
+.. _revisiting-earlier-code-examples:
+
+回顾早先代码
+--------------------------------
+
+.. _maybe-chaining:
+
+Maybe 链
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+先来看看我们在\ :ref:`chapter-10-code-case-study-parsing-a-binary-data-format`\ 写的 ``parseP5`` 函数：
+
+::
+
+    -- file: ch10/PNM.hs
+    matchHeader :: L.ByteString -> L.ByteString -> Maybe L.ByteString
+
+    -- "nat" here is short for "natural number"
+    getNat :: L.ByteString -> Maybe (Int, L.ByteString)
+
+    getBytes :: Int -> L.ByteString
+             -> Maybe (L.ByteString, L.ByteString)
+
+    parseP5 s =
+      case matchHeader (L8.pack "P5") s of
+        Nothing -> Nothing
+        Just s1 ->
+          case getNat s1 of
+            Nothing -> Nothing
+            Just (width, s2) ->
+              case getNat (L8.dropWhile isSpace s2) of
+                Nothing -> Nothing
+                Just (height, s3) ->
+                  case getNat (L8.dropWhile isSpace s3) of
+                    Nothing -> Nothing
+                    Just (maxGrey, s4)
+                      | maxGrey > 255 -> Nothing
+                      | otherwise ->
+                          case getBytes 1 s4 of
+                            Nothing -> Nothing
+                            Just (_, s5) ->
+                              case getBytes (width * height) s5 of
+                                Nothing -> Nothing
+                                Just (bitmap, s6) ->
+                                  Just (Greymap width height maxGrey bitmap, s6)
+
+这个函数如果再复杂点就要跃出屏幕边界了。我们用 ``(>>?)`` 函数重新控制了代码的结构。
+
+::
+
+    -- file: ch10/PNM.hs
+    (>>?) :: Maybe a -> (a -> Maybe b) -> Maybe b
+    Nothing >>? _ = Nothing
+    Just v  >>? f = f v
+
+我们仔细选择 ``(>>?)`` 的类型使得它能够把返回 ``Maybe`` 类型值的函数串起来。
+只要一个函数的返回值类型匹配下一个函数的参数值类型，我们就可以无限串联返回 ``Maybe`` 类型值的函数。
+``(>>?)`` 的函数体把细节隐藏了起来，我们不知道函数链是由于某个 ``Nothing`` 返回值而短路，还是完全被求值了。
+
+.. _ch14-implicit-state:
+
+隐式状态
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``(>>?)`` 清理了 ``parseP5`` 的结构。在解析时我们得一点一点处理输入字符串。
+这使得我们不得不把当前字符串包装在元组中并在 ``Maybe`` 链中传递下去。
+链中的每个函数都把解析结果作为元素放进元组，再把没处理的字符串作为另一个元素放进元组。
+
+::
+
+    -- file: ch10/PNM.hs
+    parseP5_take2 :: L.ByteString -> Maybe (Greymap, L.ByteString)
+    parseP5_take2 s =
+        matchHeader (L8.pack "P5") s      >>?
+        \s -> skipSpace ((), s)           >>?
+        (getNat . snd)                    >>?
+        skipSpace                         >>?
+        \(width, s) ->   getNat s         >>?
+        skipSpace                         >>?
+        \(height, s) ->  getNat s         >>?
+        \(maxGrey, s) -> getBytes 1 s     >>?
+        (getBytes (width * height) . snd) >>?
+        \(bitmap, s) -> Just (Greymap width height maxGrey bitmap, s)
+
+    skipSpace :: (a, L.ByteString) -> Maybe (a, L.ByteString)
+    skipSpace (a, s) = Just (a, L8.dropWhile isSpace s)
+
+我们又一次碰到了重复模式：处理一些字符串，返回结果，并且返回剩余字符串供下个函数使用。
+然而，这个模式更糟糕：如果我们想在链中传递另外一些信息，我们就不得不修改链中几乎所有的元素，将每个二元组转为三元组！
+
+我们把管理当前字符串的任务从单个函数中移出，放入把它们串联起来的函数中。
+
+::
+
+    -- file: ch10/Parse.hs
+    (==>) :: Parse a -> (a -> Parse b) -> Parse b
+
+    firstParser ==> secondParser  =  Parse chainedParser
+      where chainedParser initState   =
+              case runParse firstParser initState of
+                Left errMessage ->
+                    Left errMessage
+                Right (firstResult, newState) ->
+                    runParse (secondParser firstResult) newState
+
+我们把解析状态的细节隐藏在 ``ParseState`` 类型中。
+即使 ``getState`` 和 ``putState`` 都不会窥视解析状态，所以无论对 ``ParseState`` 作怎样的修改都不会影响到已有代码。
+
+
+
+.. _looking-for-shared-patterns:
+
+寻找共同特征
+--------------------------------
+
+当我们仔细审视上面例子的细节时，它们看起来好像并没有太多的共同点。
+有一点非常明显，它们都想把函数串起来并试图隐藏细节以便我们写出整洁的代码。然而，让我们退一步，不要考虑它们的细节。
+
+我们先来看看类型声明。
+
+::
+
+    -- file: ch14/Maybe.hs
+    data Maybe a = Nothing
+                 | Just a
+
+::
+
+    -- file: ch10/Parse.hs
+    newtype Parse a = Parse {
+          runParse :: ParseState -> Either String (a, ParseState)
+        }
+
+两种类型的共同点在于它们都有一个类型参数。因此它们都是泛型，对具体的类型一无所知。
+
+接下来，我们来看看给两个类型写的串联函数。
+
+::
+
+    ghci> :type (>>?)
+    (>>?) :: Maybe a -> (a -> Maybe b) -> Maybe b
+
+::
+
+    ghci> :type (==>)
+    (==>) :: Parse a -> (a -> Parse b) -> Parse b
+
+这两个函数具有严格相似的类型。如果把它们的类型构造器换成一个类型变量，我们将会得到一个更加抽象的类型。
+
+::
+
+    -- file: ch14/Maybe.hs
+    chain :: m a -> (a -> m b) -> m b
+
+最终，每种情况都包含了一个函数，它接受一个普通（plain）值，然后把这个值“注入”目标类型里。
+对于 ``Maybe`` 类型，这个函数是值构造器 ``Just``，``Parse`` 类型的函数要复杂一点。
+
+::
+
+    -- file: ch10/Parse.hs
+    identity :: a -> Parse a
+    identity a = Parse (\s -> Right (a, s))
+
+再次声明，我们并不关心细节或者复杂度，重要的是这些类型都有一个长得像这样的“注入”函数：
+
+::
+
+    -- file: ch14/Maybe.hs
+    inject :: a -> m a
+
+在 Haskell 里，正是这三个性质和一些如何使用它们的规则定义了 monad。让我们把它们集中放在这里：
+
+- 类型构造器 ``m``。
+
+- 一个 ``m a -> (a -> m b) -> m b`` 类型的函数，它把一个函数的输出和另一个函数的输入串联起来。
+
+- 一个 ``a -> m a`` 类型的函数，它把普通值注入进链里。也就是说，它把类型 ``a`` 用类型构造器 ``m`` 包装起来。
+
+类型构造器 ``Maybe a``、串联函数 ``(>>?)`` 以及注入函数 ``Just`` 使得 ``Maybe`` 类型成为 monad。
+
+对于 ``Parse``，对应的性质是类型构造器 ``Parse a``、串联函数 ``Parse a`` 以及注入函数 ``identity``。
+
+对于 monad 的串联函数和注入函数具体应该干什么我们刻意只字未提，因为这并不重要。
+事实上，正是因为 monad 如此简单，它在 Haskell 中无处不在。
+许多常见的编程模式都用到了 monad 结构：传递隐式数据，或是短路求值链（如果其中某个失败，to choose but two）。
+
+.. _the-monad-typeclass:
+
+Monad 类型类
+--------------------------------
+
+我们可以用一个 Haskell 类型类来表示串联和注入的概念以及它们的类型。标准 Prelude 已经包含了这样一个类型类，称为 ``Monad``。
+
+::
+
+    -- file: ch14/Maybe.hs
+    class Monad m where
+        -- chain
+        (>>=)  :: m a -> (a -> m b) -> m b
+        -- inject
+        return :: a -> m a
+
+``(>>=)`` 是我们的串联函数。我们已经在\ :ref:`sequencing`\ 一节中介绍过。它常常被称为“bind”，因为它把左侧运算的结果绑定到右侧运算的参数上。
+
+我们的注入函数是 ``return``。我们在\ :ref:`the-true-nature-of-return`\ 一节讲过，选用 ``return`` 这个名字有点倒霉。
+这个名字在命令式语言中广泛使用，并且有一个容易理解的含义。在 Haskell 里，对它行为的限制少多了。
+具体来讲，在函数链的中间调用 ``return`` 并不会导致提早退出。
+我们可以这样把它的行为和名字联系起来：它把纯值（``a`` 类型）放进（returns）monad（``m a`` 类型） 里。
+
+``(>>=)`` 和 ``return`` 是 ``Monad`` 类型类的核心函数。除此之外，它还定义了另外两个函数。
+第一个是 ``(>>)``。类似于 ``(>>=)``，它的作用也是串联，但它忽略左侧的值。
+
+::
+
+    -- file: ch14/Maybe.hs
+    (>>) :: m a -> m b -> m b
+    a >> b = a >>= \_ -> b
+
+当我们想以某个顺序执行一系列行为，但又不关心它们的结果时，我们用这个函数。
+看起来这可能有点费解：我们怎么可能不关心函数的返回值呢？
+回想一下，之前我们曾经定义过一个 ``(==>&)`` 组合子来专门表达这个概念。
+另外，考虑一下 ``print`` 这样的函数，它提供了一个占位结果，我们没有必要关心是什么。
+
+::
+
+    ghci> :type print "foo"
+    print "foo" :: IO ()
+
+如果用 ``(>>=)`` 的话，我们必须给它右侧提供一个函数，这个函数忽略它的参数。
+
+::
+
+    ghci> print "foo" >>= \_ -> print "bar"
+    "foo"
+    "bar"
+
+但如果直接使用 ``(>>)``，我们可以省略掉没用的函数。
+
+::
+
+    ghci> print "baz" >> print "quux"
+    "baz"
+    "quux"
+
+正如我们上面展示的，``(>>)`` 的默认实现是以 ``(>>=)`` 来定义的。
+
+第二个非核心 ``Monad`` 函数是 ``fail``，它接受一条错误信息然后让函数链失败。
+
+::
+
+    -- file: ch14/Maybe.hs
+        fail :: String -> m a
+        fail = error
+
+.. note::
+
+    小心失败
+
+    很多 ``Monad`` 实例并不会重写我们在这里提到的 ``fail`` 的默认实现。
+    因此，在这些 monad 中，
+
+
+.. _and-now-a-jargon-moment:
+
+术语解释
+--------------------------------
+
+围绕 monad 可能有些术语你还不是很熟。虽然这些用语并不正式，但却很常见，因此了解一点很有必要。
+
+-   "monadic" 表示 “和 monad 相关的”。monadic 类型是 Monad 类型类的实例；monadic 值的类型是 monadic。
+
+-   当我们说某个类型是“一个 monad” 时，我们其实想说这个类型是 Monad 类型类的实例。
+    作为 Monad 实例，它包含了 Monad 三要素：类型构造器、注入函数以及串联函数。
+
+-   “动作”是 monad 值的别称。这个说法可能源自 I/O monad 的引入，``print "foo"`` 这样的 monad 值会导致副作用。
+    返回类型为 monad 的函数有时也被称为动作，尽管并不那么常见。
+
+.. _using-a-new-monad-show-your-work:
+
+Using a new monad: show your work!
+----------------------------------
+
+在介绍 monad 的时候，我们已经展示某些写过的代码其实就是 monad。
+现在我们开始慢慢了解 Monad 了，并且也见到了 Monad 类型类，让我们来定义一个新的 monad。
+我们先来定义它的接口，然后再开始使用。一旦有了这些，我们就
+
+纯 Haskell 代码写起来极其简洁，但它不能进行 I/O 行为。
+有时我们想记下做的决定，但又不想把日志信息写进文件。我们开发一个小型库来处理。
+
+回想一下我们在xxxx提到的 ``globToRegex`` 函数。我们做一点修改使它能记录转换过的特殊模式序列。
+我们重新访问熟悉代码是有目的的：这使得我们可以比较相同代码的非 monad 和 monad 版本。
+
+首先把结果用 ``Logger`` 类型构造器包装起来。
+
+::
+
+    -- file: ch14/Logger.hs
+    globToRegex :: String -> Logger String
+
+.. _information-hiding:
+
+信息隐藏
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+我们可以使 ``Logger`` 模块内部保持抽象。
+
+::
+
+    -- file: ch14/Logger.hs
+    module Logger
+        (
+          Logger
+        , Log
+        , runLogger
+        , record
+        ) where
+
+像这样隐藏细节有两个好处：首先，它让我们实现 monad 时保持灵活，更重要的是，它给用户提供了一个简单接口。
+
+``Logger`` 类型仅仅是一个类型构造器。我们不会导出用户创建这个类型的值时所需的值构造器。
+它们只能用 ``Logger`` 写类型签名。
+
+``Log`` 类型仅仅是字符串列表的别名，它让一些签名更易读。我们使用字符串列表以保持简洁。
+
+::
+
+    -- file: ch14/Logger.hs
+    type Log = [String]
+
+我们不给用户提供值构造器，相反，我们提供 ``runLogger`` 函数用以
+
+Controlled escape
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Leaving a trace
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Using the Logger monad
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Mixing pure and monadic code
+--------------------------------
+
+Putting a few misconceptions to rest
+------------------------------------
+
+Building the Logger monad
+--------------------------------
+
+Sequential logging, not sequential evaluation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The writer monad
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The Maybe monad
+--------------------------------
+
+Executing the Maybe monad
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Maybe at work, and good API design
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The list monad
+--------------------------------
+
+Understanding the list monad
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Putting the list monad to work
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Desugaring of do blocks
+--------------------------------
+
+Monads as a programmable semicolon
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Why go sugar-free?
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The state monad
+--------------------------------
+
+Almost a state monad
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Reading and modifying the state
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Will the real state monad please stand up?
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Using the state monad: generating random values
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A first attempt at purity
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Random values in the state monad
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Running the state monad
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+What about a bit more state?
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Monads and functors
+--------------------------------
+
+Another way of looking at monads
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The monad laws, and good coding style
+-------------------------------------
+

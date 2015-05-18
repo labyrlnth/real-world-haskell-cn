@@ -1,3 +1,5 @@
+.. _chapter7-I/O:
+
 第七章：I/O
 ===========
 
@@ -680,7 +682,7 @@ The IO Monad
 
 大多数语言在纯函数和非纯函数之间没有明确的区分。Haskell的函数有数学上的意思：它们是纯粹的计算过程，并且这些计算不会被外部所影响。此外，这些计算可以在任何时候、按需地执行。
 
-显然，我们需要其他一些工具来使用I/O。Haskell里的这个工具叫做动作（Actions）。动作类似于函数，它们在定义的时候不做任何事情，而在它们被调用时执行一些任务。I/O动作被定义在 ``IO`` Monad。Monad是一种强大的将函数链在一起的方法，在 `第十四章：Monad`_ 会讲到。为了理解I/O你不是一定要理解Monad，只要理解操作的返回类型都带有 ``IO`` 就行了。我们来看一些类型：
+显然，我们需要其他一些工具来使用I/O。Haskell里的这个工具叫做动作（Actions）。动作类似于函数，它们在定义的时候不做任何事情，而在它们被调用时执行一些任务。I/O动作被定义在 ``IO`` Monad。Monad是一种强大的将函数链在一起的方法，在 \ :ref:`chapter-14-monads`\ 会讲到。为了理解I/O你不是一定要理解Monad，只要理解操作的返回类型都带有 ``IO`` 就行了。我们来看一些类型：
 
 ::
 
@@ -782,6 +784,7 @@ The IO Monad
 
 现在回到 ``main`` ， ``mapM_`` 在 ``numbers . show`` 每个元素上应用 ``(str2action . show)`` ， ``number . show`` 把每个数字转换成一个 ``String`` ， ``str2action`` 把每个 ``String`` 转换成一个操作。 ``mapM_`` 把这些单独的操作组合成一个打的操作，然后打印出这些行。
 
+.. _sequencing:
 
 串联化
 ^^^^^^^^^^^^^^^^^^
@@ -819,11 +822,12 @@ The IO Monad
        getLine >>=
        (\inpStr -> putStrLn $ "Welcome to Haskell, " ++ inpStr ++ "!")
 
-你定义 ``do`` 代码块的时候，Haskell编译器内部会把它翻译成像这样。
+定义 ``do`` 代码块的时候，Haskell编译器内部会把它翻译成这样。
 
 .. tip::
-   忘记了怎么使用 ``\`` (lambda表达式)了吗？参见 `匿名（lambda）函数`_ 一节。
+   忘记了怎么使用 ``\`` (lambda表达式)了吗？参见\ :ref:`anonymous-lambda-functions`\一节。
 
+.. _the-true-nature-of-return:
 
 Return的本色
 ^^^^^^^^^^^^^^^^^^^^^^^

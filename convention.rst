@@ -143,6 +143,13 @@ monad栈      monad transformer stack / monad stack
 
 抬举         lift
 
+第十四章
+------------------
+
+串联       chaining
+
+注入       injection
+
 第二十八章
 ------------------
 

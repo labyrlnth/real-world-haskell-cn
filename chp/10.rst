@@ -1,3 +1,5 @@
+.. _chapter-10-code-case-study-parsing-a-binary-data-format:
+
 第十章：代码案例学习：解析二进制数据格式
 =================================================================
 
@@ -198,7 +200,7 @@ netpbm 的灰度文件格式名为 PGM（"portable grey map"）。事实上它�
 
 尽管在\ :ref:`anonymous-lambda-functions`\ 中我们已经警告过不要过度使用匿名函数，在上面的函数链中我们还是用了一些。因为这些函数太小了，给它们命名并不能提高可读性。
 
-.. _implicit-state:
+.. _ch10-implicit-state:
 
 隐式状态
 -----------------------------
@@ -365,7 +367,12 @@ identity 解析器
 
 .. note::
 
-    Hanging lambdas
+    悬挂(Hanging) lambdas
+
+    我们之前还没有讨论过 ``parseByte`` 函数的视觉风格。它将匿名函数的参数和 ``->`` 放在行尾，函数体放在下一行。
+
+    这种布局的匿名函数没有正式名字，因此让我们称它为“悬挂 lambda”，它的主要作用是给函数体留出更多空间。
+    它也让我们更清楚地看到相邻两个函数之间的关系。例如，第一个函数的结果经常作为参数传给第二个函数。
 
 .. _obtaining-and-modifying-the-parse-state:
 

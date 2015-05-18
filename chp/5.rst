@@ -965,7 +965,7 @@ Haskell 开发诀窍
     ghci> putStrLn (pretty 30 value)
     {"f": 1.0, "q": true }
 
-.. _exercises:
+.. _ch5-exercises:
 
 练习
 ^^^^^^^^^^^^^^^^^^^^
